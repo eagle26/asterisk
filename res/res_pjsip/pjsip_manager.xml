@@ -220,6 +220,9 @@
 				<parameter name="ExternalSignalingAddress">
 					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='transport']/configOption[@name='external_signaling_address']/synopsis/node())"/></para>
 				</parameter>
+				<parameter name="MSTeamSignalingAddress">
+					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='transport']/configOption[@name='ms_signaling_address']/synopsis/node())"/></para>
+				</parameter>
 				<parameter name="ExternalSignalingPort">
 					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='transport']/configOption[@name='external_signaling_port']/synopsis/node())"/></para>
 				</parameter>

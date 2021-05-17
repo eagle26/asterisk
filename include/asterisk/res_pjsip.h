@@ -236,6 +236,8 @@ struct ast_sip_transport {
 		AST_STRING_FIELD(external_media_address);
 		/*! Optional domain to use for messages if provided could not be found */
 		AST_STRING_FIELD(domain);
+        /*! MS Team Variable */
+        AST_STRING_FIELD(ms_signaling_address);
 		);
 	/*! Type of transport */
 	enum ast_transport type;

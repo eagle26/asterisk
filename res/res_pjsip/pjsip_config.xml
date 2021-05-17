@@ -2382,6 +2382,9 @@
 					</since>
 					<synopsis>External address for SIP signalling</synopsis>
 				</configOption>
+				<configOption name="ms_signaling_address">
+					<synopsis>MS Team address for SIP signalling</synopsis>
+				</configOption>
 				<configOption name="external_signaling_port" default="0">
 					<since>
 						<version>12.0.0</version>
