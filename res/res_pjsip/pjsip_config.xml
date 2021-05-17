@@ -1664,6 +1664,9 @@
 				<configOption name="external_signaling_address">
 					<synopsis>External address for SIP signalling</synopsis>
 				</configOption>
+				<configOption name="ms_signaling_address">
+					<synopsis>MS Team address for SIP signalling</synopsis>
+				</configOption>
 				<configOption name="external_signaling_port" default="0">
 					<synopsis>External port for SIP signalling</synopsis>
 				</configOption>

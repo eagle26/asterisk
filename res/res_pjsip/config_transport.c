@@ -955,6 +955,35 @@ static int privkey_file_to_str(const void *obj, const intptr_t *args, char **buf
 	return 0;
 }
 
+/*! \brief Custom handler for ms team parameter */
+static int transport_ms_signaling_address_handler(const struct aco_option *opt, struct ast_variable *var, void *obj)
+{
+	struct ast_sip_transport *transport = obj;
+    RAII_VAR(struct ast_sip_transport_state *, state, find_or_create_temporary_state(transport), ao2_cleanup);
+
+    if (!state) {
+    		return -1;
+    }
+
+    if (ast_strlen_zero(var->value)) {
+        /* Ignore empty options */
+        return 0;
+    }
+
+	ast_string_field_set(transport, ms_signaling_address, var->value);
+
+    return 0;
+}
+
+static int transport_ms_signaling_address_to_str(const void *obj, const intptr_t *args, char **buf)
+{
+	const struct ast_sip_transport *transport = obj;
+
+	*buf = ast_strdup(transport->ms_signaling_address);
+
+	return 0;
+}
+
 /*! \brief Custom handler for turning a string protocol into an enum */
 static int transport_protocol_handler(const struct aco_option *opt, struct ast_variable *var, void *obj)
 {
@@ -1652,6 +1681,9 @@ int ast_sip_initialize_sorcery_transport(void)
 	ast_sorcery_object_field_register(sorcery, "transport", "domain", "", OPT_STRINGFIELD_T, 0, STRFLDSET(struct ast_sip_transport, domain));
 	ast_sorcery_object_field_register_custom(sorcery, "transport", "verify_server", "", transport_tls_bool_handler, verify_server_to_str, NULL, 0, 0);
 	ast_sorcery_object_field_register_custom(sorcery, "transport", "verify_client", "", transport_tls_bool_handler, verify_client_to_str, NULL, 0, 0);
+
+	ast_sorcery_object_field_register_custom(sorcery, "transport", "ms_signaling_address", "", transport_ms_signaling_address_handler, transport_ms_signaling_address_to_str, NULL, 0, 0);
+
 	ast_sorcery_object_field_register_custom(sorcery, "transport", "require_client_cert", "", transport_tls_bool_handler, require_client_cert_to_str, NULL, 0, 0);
 	ast_sorcery_object_field_register_custom(sorcery, "transport", "method", "", transport_tls_method_handler, tls_method_to_str, NULL, 0, 0);
 #if defined(PJ_HAS_SSL_SOCK) && PJ_HAS_SSL_SOCK != 0
