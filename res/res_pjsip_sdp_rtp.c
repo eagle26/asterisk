@@ -106,9 +106,10 @@ static int rtp_check_timeout(const void *data)
 {
 	struct ast_sip_session_media *session_media = (struct ast_sip_session_media *)data;
 	struct ast_rtp_instance *rtp = session_media->rtp;
-	int elapsed;
-	int timeout;
 	struct ast_channel *chan;
+	int elapsed;
+	int now;
+	int timeout;
 
 	if (!rtp) {
 		return 0;
@@ -119,41 +120,37 @@ static int rtp_check_timeout(const void *data)
 		return 0;
 	}
 
-	/* Get channel lock to make sure that we access a consistent set of values
-	 * (last_rx and direct_media_addr) - the lock is held when values are modified
-	 * (see send_direct_media_request()/check_for_rtp_changes() in chan_pjsip.c). We
-	 * are trying to avoid a situation where direct_media_addr has been reset but the
-	 * last-rx time was not set yet.
-	 */
-	ast_channel_lock(chan);
-
-	elapsed = time(NULL) - ast_rtp_instance_get_last_rx(rtp);
+	/* Store these values locally to avoid multiple function calls */
+	now = time(NULL);
 	timeout = ast_rtp_instance_get_timeout(rtp);
-	if (elapsed < timeout) {
-		ast_channel_unlock(chan);
+
+	/* If the channel is not in UP state or call is redirected
+	 * outside Asterisk return for later check.
+	 */
+	if (ast_channel_state(chan) != AST_STATE_UP || !ast_sockaddr_isnull(&session_media->direct_media_addr)) {
+		/* Avoiding immediately disconnect after channel up or direct media has been stopped */
+		ast_rtp_instance_set_last_rx(rtp, now);
 		ast_channel_unref(chan);
-		return (timeout - elapsed) * 1000;
+		/* Recheck after half timeout for avoiding possible races
+		* and faster reacting to cases while there is no an RTP at all.
+		*/
+		return timeout * 500;
 	}
 
-	/* Last RTP packet was received too long ago
-	 * - disconnect channel unless direct media is in use.
-	 */
-	if (!ast_sockaddr_isnull(&session_media->direct_media_addr)) {
-		ast_debug_rtp(3, "(%p) RTP not disconnecting channel '%s' for lack of %s RTP activity in %d seconds "
-			"since direct media is in use\n", rtp, ast_channel_name(chan),
-			ast_codec_media_type2str(session_media->type), elapsed);
-		ast_channel_unlock(chan);
+	elapsed = now - ast_rtp_instance_get_last_rx(rtp);
+	if (elapsed < timeout) {
 		ast_channel_unref(chan);
-		return timeout * 1000; /* recheck later, direct media may have ended then */
+		return (timeout - elapsed) * 1000;
 	}
 
 	ast_log(LOG_NOTICE, "Disconnecting channel '%s' for lack of %s RTP activity in %d seconds\n",
 		ast_channel_name(chan), ast_codec_media_type2str(session_media->type), elapsed);
 
+	ast_channel_lock(chan);
 	ast_channel_hangupcause_set(chan, AST_CAUSE_REQUESTED_CHAN_UNAVAIL);
-	ast_softhangup(chan, AST_SOFTHANGUP_DEV);
-
 	ast_channel_unlock(chan);
+
+	ast_softhangup(chan, AST_SOFTHANGUP_DEV);
 	ast_channel_unref(chan);
 
 	return 0;
@@ -1610,6 +1607,7 @@ static int add_crypto_to_stream(struct ast_sip_session *session,
 	static const pj_str_t STR_PASSIVE = { "passive", 7 };
 	static const pj_str_t STR_ACTPASS = { "actpass", 7 };
 	static const pj_str_t STR_HOLDCONN = { "holdconn", 8 };
+	static const pj_str_t STR_MEDSECREQ = { "requested", 9 };
 	enum ast_rtp_dtls_setup setup;
 
 	switch (session_media->encryption) {
@@ -1639,6 +1637,11 @@ static int add_crypto_to_stream(struct ast_sip_session *session,
 				pj_cstr(&stmp, crypto_attribute));
 			media->attr[media->attr_count++] = attr;
 		} while ((tmp = AST_LIST_NEXT(tmp, sdp_srtp_list)));
+
+		if (session->endpoint->security_negotiation == AST_SIP_SECURITY_NEG_MEDIASEC) {
+			attr = pjmedia_sdp_attr_create(pool, "3ge2ae", &STR_MEDSECREQ);
+			media->attr[media->attr_count++] = attr;
+		}
 
 		break;
 	case AST_SIP_MEDIA_ENCRYPT_DTLS:
@@ -1901,6 +1904,16 @@ static int create_outgoing_sdp_stream(struct ast_sip_session *session, struct as
 		struct ast_format *format = ast_format_cap_get_format(caps, index);
 
 		if (ast_format_get_type(format) != media_type) {
+			ao2_ref(format, -1);
+			continue;
+		}
+
+		/* It is possible for some formats not to have SDP information available for them
+		 * and if this is the case, skip over them so the SDP can still be created.
+		 */
+		if (!ast_rtp_lookup_sample_rate2(1, format, 0)) {
+			ast_log(LOG_WARNING, "Format '%s' can not be added to SDP, consider disallowing it on endpoint '%s'\n",
+				ast_format_get_name(format), ast_sorcery_object_get_id(session->endpoint));
 			ao2_ref(format, -1);
 			continue;
 		}
@@ -2234,8 +2247,7 @@ static int apply_negotiated_sdp_stream(struct ast_sip_session *session,
 	}
 
 	if (ast_rtp_instance_get_timeout(session_media->rtp)) {
-		session_media->timeout_sched_id = ast_sched_add_variable(sched,
-			ast_rtp_instance_get_timeout(session_media->rtp) * 1000, rtp_check_timeout,
+		session_media->timeout_sched_id = ast_sched_add_variable(sched,	500, rtp_check_timeout,
 			session_media, 1);
 	}
 

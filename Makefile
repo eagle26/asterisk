@@ -101,6 +101,11 @@ export TAR
 export PATCH
 export SED
 export NM
+export FIND
+export BASENAME
+export DIRNAME
+export XMLLINT
+export XMLSTARLET
 
 # makeopts is required unless the goal is just {dist{-}}clean
 ifeq ($(MAKECMDGOALS),clean)
@@ -322,6 +327,9 @@ else
 SUBMAKE:=$(MAKE) --quiet --no-print-directory
 endif
 
+mkfile_path := $(abspath $(lastword $(MAKEFILE_LIST)))
+mkfile_dir := $(dir $(mkfile_path))
+
 # $(MAKE) is printed in several places, and we want it to be a
 # fixed size string. Define a variable whose name has also the
 # same size, so we can easily align text.
@@ -480,7 +488,7 @@ XML_core_en_US := $(shell build_tools/make_xml_documentation --command=print_dep
 # core-en_US.xml is the normal documentation created with asterisk builds.
 doc/core-en_US.xml: makeopts .lastclean $(XML_core_en_US)
 	@build_tools/make_xml_documentation --command=create_xml --source-tree=. --mod-subdirs="$(DOC_MOD_SUBDIRS)" \
-		--with-moduleinfo --validate --output-file=$@
+		--with-moduleinfo --output-file=$@
 
 # The full-en_US.xml target is only called by the wiki documentation generation process
 # and does special post-processing in preparation for uploading to the wiki.
@@ -492,7 +500,7 @@ ifeq ($(PYTHON),:)
 	@echo "--------------------------------------------------------------------------"
 else
 	@build_tools/make_xml_documentation --command=create_xml --source-tree=. --mod-subdirs="$(DOC_MOD_SUBDIRS)" \
-		--for-wiki --validate --output-file=$@ --core-output-file=./doc/core-en_US.xml
+		--for-wiki --output-file=$@ --core-output-file=./doc/core-en_US.xml
 endif
 
 validate-docs: doc/core-en_US.xml
@@ -553,9 +561,9 @@ bininstall: _all installdirs $(SUBDIRS_INSTALL) main-bininstall
 	$(INSTALL) -m 755 contrib/scripts/astversion "$(DESTDIR)$(ASTSBINDIR)/"
 	$(INSTALL) -m 755 contrib/scripts/astgenkey "$(DESTDIR)$(ASTSBINDIR)/"
 	$(INSTALL) -m 755 contrib/scripts/autosupport "$(DESTDIR)$(ASTSBINDIR)/"
-	if [ ! -f /sbin/launchd ]; then \
-		./build_tools/install_subst contrib/scripts/safe_asterisk "$(DESTDIR)$(ASTSBINDIR)/safe_asterisk"; \
-	fi
+ifneq ($(HAVE_SBIN_LAUNCHD),1)
+	./build_tools/install_subst contrib/scripts/safe_asterisk "$(DESTDIR)$(ASTSBINDIR)/safe_asterisk";
+endif
 
 ifneq ($(DISABLE_XMLDOC),yes)
 	$(INSTALL) -m 644 doc/core-*.xml "$(DESTDIR)$(ASTDATADIR)/documentation"
@@ -688,7 +696,17 @@ ifneq ($(filter ~%,$(DESTDIR)),)
 	@exit 1
 endif
 
-install: badshell bininstall datafiles
+versioncheck:
+ifeq ($(ASTERISKVERSION),UNKNOWN__git_check_fail)
+	@echo "Asterisk Version is unknown due to a git error. If you are running make"
+	@echo "as a different user than the project owner, this can be resolved by"
+	@echo "running the following command as the user currently executing make: "$$USER
+	@echo "git config --global --add safe.directory "$(mkfile_dir:/=)
+	@exit 1
+endif
+
+
+install: badshell versioncheck bininstall datafiles
 	@if [ -x /usr/sbin/asterisk-post-install ]; then \
 		/usr/sbin/asterisk-post-install "$(DESTDIR)" . ; \
 	fi
@@ -873,6 +891,12 @@ ifeq ($(AST_DEVMODE),yes)
 endif
 ifeq ($(ASTERISKVERSION),UNKNOWN__and_probably_unsupported)
 	@echo "Asterisk Version is unknown, not configuring Doxygen PROJECT_NUMBER."
+else ifeq ($(ASTERISKVERSION),UNKNOWN__git_check_fail)
+	@echo "Asterisk Version is unknown due to a git error. If you are running make"
+	@echo "as a different user than the project owner, this can be resolved by"
+	@echo "running the following command as the user currently executing make: "$$USER
+	@echo "git config --global --add safe.directory "$(mkfile_dir:/=)
+	@echo "not configuring Doxygen PROJECT_NUMBER."
 else
 	@echo "PROJECT_NUMBER = $(ASTERISKVERSION)" >> doc/Doxyfile
 endif
@@ -962,6 +986,7 @@ sounds:
 .lastclean: .cleancount
 	@$(MAKE) clean
 	@[ -f "$(DESTDIR)$(ASTDBDIR)/astdb.sqlite3" ] || [ ! -f "$(DESTDIR)$(ASTDBDIR)/astdb" ] || [ ! -f menuselect.makeopts ] || grep -q MENUSELECT_UTILS=.*astdb2sqlite3 menuselect.makeopts || (sed -i.orig -e's/MENUSELECT_UTILS=\(.*\)/MENUSELECT_UTILS=\1 astdb2sqlite3/' menuselect.makeopts && echo "Updating menuselect.makeopts to include astdb2sqlite3" && echo "Original version backed up to menuselect.makeopts.orig")
+
 
 $(SUBDIRS_UNINSTALL):
 	+@DESTDIR="$(DESTDIR)" ASTSBINDIR="$(ASTSBINDIR)" ASTDATADIR="$(ASTDATADIR)" $(SUBMAKE) -C $(@:-uninstall=) uninstall
