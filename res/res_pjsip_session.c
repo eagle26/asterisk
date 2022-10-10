@@ -3665,16 +3665,14 @@ enum sip_get_destination_result {
 static enum sip_get_destination_result get_destination(struct ast_sip_session *session, pjsip_rx_data *rdata)
 {
 	pjsip_uri *ruri = rdata->msg_info.msg->line.req.uri;
-	pjsip_sip_uri *sip_ruri;
 	struct ast_features_pickup_config *pickup_cfg;
 	const char *pickupexten;
 
-	if (!PJSIP_URI_SCHEME_IS_SIP(ruri) && !PJSIP_URI_SCHEME_IS_SIPS(ruri)) {
+	if (!ast_sip_is_allowed_uri(ruri)) {
 		return SIP_GET_DEST_UNSUPPORTED_URI;
 	}
 
-	sip_ruri = pjsip_uri_get_uri(ruri);
-	ast_copy_pj_str(session->exten, &sip_ruri->user, sizeof(session->exten));
+	ast_copy_pj_str(session->exten, ast_sip_pjsip_uri_get_username(ruri), sizeof(session->exten));
 
 	/*
 	 * We may want to match in the dialplan without any user
@@ -3791,7 +3789,22 @@ static pjsip_inv_session *pre_session_setup(pjsip_rx_data *rdata, const struct a
 	pjsip_dialog *dlg;
 	pjsip_inv_session *inv_session;
 	unsigned int options = endpoint->extensions.flags;
+	const pj_str_t STR_100REL = { "100rel", 6};
+	unsigned int i;
 	pj_status_t dlg_status = PJ_EUNKNOWN;
+
+	/*
+	 * If 100rel is set to "peer_supported" on the endpoint and the peer indicated support for 100rel
+	 * in the Supported header, send 1xx responses reliably by adding PJSIP_INV_REQUIRE_100REL to pjsip_inv_options flags.
+	 */
+	if (endpoint->rel100 == AST_SIP_100REL_PEER_SUPPORTED && rdata->msg_info.supported != NULL) {
+		for (i = 0; i < rdata->msg_info.supported->count; ++i) {
+			if (pj_stricmp(&rdata->msg_info.supported->values[i], &STR_100REL) == 0) {
+				options |= PJSIP_INV_REQUIRE_100REL;
+				break;
+			}
+		}
+	}
 
 	if (pjsip_inv_verify_request(rdata, &options, NULL, NULL, ast_sip_get_pjsip_endpoint(), &tdata) != PJ_SUCCESS) {
 		if (tdata) {
@@ -4803,7 +4816,8 @@ static void session_inv_on_tsx_state_changed(pjsip_inv_session *inv, pjsip_trans
 						ast_debug(1, "%s: reINVITE received final response code %d\n",
 							ast_sip_session_get_name(session),
 							tsx->status_code);
-						if ((tsx->status_code == 401 || tsx->status_code == 407)
+						if ((tsx->status_code == 401 || tsx->status_code == 407
+							|| (session->endpoint->security_negotiation && tsx->status_code == 494))
 							&& ++session->authentication_challenge_count < MAX_RX_CHALLENGES
 							&& !ast_sip_create_request_with_auth(
 								&session->endpoint->outbound_auths,
@@ -4897,7 +4911,7 @@ static void session_inv_on_tsx_state_changed(pjsip_inv_session *inv, pjsip_trans
 						ast_sip_session_get_name(session),
 						(int) pj_strlen(&tsx->method.name), pj_strbuf(&tsx->method.name),
 						tsx->status_code);
-					if ((tsx->status_code == 401 || tsx->status_code == 407)
+					if ((tsx->status_code == 401 || tsx->status_code == 407 || tsx->status_code == 494)
 						&& ++session->authentication_challenge_count < MAX_RX_CHALLENGES
 						&& !ast_sip_create_request_with_auth(
 							&session->endpoint->outbound_auths,

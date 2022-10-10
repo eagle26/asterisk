@@ -633,6 +633,12 @@
 		</see-also>
 	</manager>
 	<manager name="CancelAtxfer" language="en_US">
+		<since>
+			<version>13.18.0</version>
+			<version>14.7.0</version>
+			<version>15.1.0</version>
+			<version>16.0.0</version>
+		</since>
 		<synopsis>
 			Cancel an attended transfer.
 		</synopsis>
@@ -1277,21 +1283,6 @@
 			this command can be used to create filters that may bypass
 			filters defined in manager.conf</para>
 		</description>
-		<see-also>
-			<ref type="manager">FilterList</ref>
-		</see-also>
-	</manager>
-	<manager name="FilterList" language="en_US">
-		<synopsis>
-			Show current event filters for this session
-		</synopsis>
-		<description>
-			<para>The filters displayed are for the current session.  Only those filters defined in
-                        manager.conf will be present upon starting a new session.</para>
-		</description>
-		<see-also>
-			<ref type="manager">Filter</ref>
-		</see-also>
 	</manager>
 	<manager name="BlindTransfer" language="en_US">
 		<synopsis>
@@ -6198,7 +6189,7 @@ static int match_filter(struct mansession *s, char *eventdata)
 	if (manager_debug) {
 		ast_verbose("<-- Examining AMI event: -->\n%s\n", eventdata);
 	} else {
-		ast_debug(3, "Examining AMI event:\n%s\n", eventdata);
+		ast_debug(4, "Examining AMI event:\n%s\n", eventdata);
 	}
 	if (!ao2_container_count(s->session->whitefilters) && !ao2_container_count(s->session->blackfilters)) {
 		return 1; /* no filtering means match all */
@@ -6242,7 +6233,7 @@ static int process_events(struct mansession *s)
 			    (s->session->readperm & eqe->category) == eqe->category &&
 			    (s->session->send_events & eqe->category) == eqe->category) {
 					if (match_filter(s, eqe->eventdata)) {
-						if (send_string(s, eqe->eventdata) < 0)
+						if (send_string(s, eqe->eventdata) < 0 || s->write_error)
 							ret = -1;	/* don't send more */
 					}
 			}
@@ -7023,16 +7014,17 @@ done:
 }
 
 /*! \brief remove at most n_max stale session from the list. */
-static void purge_sessions(int n_max)
+static int purge_sessions(int n_max)
 {
 	struct ao2_container *sessions;
 	struct mansession_session *session;
 	time_t now = time(NULL);
 	struct ao2_iterator i;
+	int purged = 0;
 
 	sessions = ao2_global_obj_ref(mgr_sessions);
 	if (!sessions) {
-		return;
+		return 0;
 	}
 	i = ao2_iterator_init(sessions, 0);
 	ao2_ref(sessions, -1);
@@ -7048,12 +7040,14 @@ static void purge_sessions(int n_max)
 			ao2_unlock(session);
 			session_destroy(session);
 			n_max--;
+			purged++;
 		} else {
 			ao2_unlock(session);
 			unref_mansession(session);
 		}
 	}
 	ao2_iterator_destroy(&i);
+	return purged;
 }
 
 /*! \brief
@@ -7121,6 +7115,14 @@ static int __attribute__((format(printf, 9, 0))) __manager_event_sessions_va(
 	struct timeval now;
 	struct ast_str *buf;
 	int i;
+
+	if (!ast_strlen_zero(manager_disabledevents)) {
+		if (ast_in_delimited_string(event, manager_disabledevents, ',')) {
+			ast_debug(3, "AMI Event '%s' is globally disabled, skipping\n", event);
+			/* Event is globally disabled */
+			return -1;
+		}
+	}
 
 	buf = ast_str_thread_get(&manager_event_buf, MANAGER_EVENT_BUF_INITSIZE);
 	if (!buf) {
@@ -7232,15 +7234,6 @@ int __ast_manager_event_multichan(int category, const char *event, int chancount
 	struct ao2_container *sessions = ao2_global_obj_ref(mgr_sessions);
 	va_list ap;
 	int res;
-
-	if (!ast_strlen_zero(manager_disabledevents)) {
-		if (ast_in_delimited_string(event, manager_disabledevents, ',')) {
-			ast_debug(3, "AMI Event '%s' is globally disabled, skipping\n", event);
-			/* Event is globally disabled */
-			ao2_cleanup(sessions);
-			return 0;
-		}
-	}
 
 	if (!any_manager_listeners(sessions)) {
 		/* Nobody is listening */
@@ -8647,7 +8640,17 @@ static int webregged = 0;
  */
 static void purge_old_stuff(void *data)
 {
-	purge_sessions(1);
+	struct ast_tcptls_session_args *ser = data;
+	/* purge_sessions will return the number of sessions actually purged,
+	 * up to a maximum of it's arguments, purge one at a time, keeping a
+	 * purge interval of 1ms as long as we purged a session, otherwise
+	 * revert to a purge check every 5s
+	 */
+	if (purge_sessions(1) == 1) {
+		ser->poll_timeout = 1;
+	} else {
+		ser->poll_timeout = 5000;
+	}
 	purge_events();
 }
 
@@ -8688,6 +8691,7 @@ static char *handle_manager_show_settings(struct ast_cli_entry *e, int cmd, stru
 	}
 #define FORMAT "  %-25.25s  %-15.55s\n"
 #define FORMAT2 "  %-25.25s  %-15d\n"
+#define FORMAT3 "  %-25.25s  %s\n"
 	if (a->argc != 3) {
 		return CLI_SHOWUSAGE;
 	}
@@ -8705,11 +8709,12 @@ static char *handle_manager_show_settings(struct ast_cli_entry *e, int cmd, stru
 	ast_cli(a->fd, FORMAT, "Allow multiple login:", AST_CLI_YESNO(allowmultiplelogin));
 	ast_cli(a->fd, FORMAT, "Display connects:", AST_CLI_YESNO(displayconnects));
 	ast_cli(a->fd, FORMAT, "Timestamp events:", AST_CLI_YESNO(timestampevents));
-	ast_cli(a->fd, FORMAT, "Channel vars:", S_OR(manager_channelvars, ""));
-	ast_cli(a->fd, FORMAT, "Disabled events:", S_OR(manager_disabledevents, ""));
+	ast_cli(a->fd, FORMAT3, "Channel vars:", S_OR(manager_channelvars, ""));
+	ast_cli(a->fd, FORMAT3, "Disabled events:", S_OR(manager_disabledevents, ""));
 	ast_cli(a->fd, FORMAT, "Debug:", AST_CLI_YESNO(manager_debug));
 #undef FORMAT
 #undef FORMAT2
+#undef FORMAT3
 
 	return CLI_SUCCESS;
 }

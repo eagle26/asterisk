@@ -1596,17 +1596,17 @@ static int sub_persistence_recreate(void *obj)
 	struct ast_sip_pubsub_body_generator *generator;
 	struct ast_sip_subscription_handler *handler;
 	char *resource;
-	pjsip_sip_uri *request_uri;
 	size_t resource_size;
 	int resp;
 	struct resource_tree tree;
 	pjsip_expires_hdr *expires_header;
 	int64_t expires;
+	const pj_str_t *user;
 
-	request_uri = pjsip_uri_get_uri(rdata->msg_info.msg->line.req.uri);
-	resource_size = pj_strlen(&request_uri->user) + 1;
+	user = ast_sip_pjsip_uri_get_username(rdata->msg_info.msg->line.req.uri);
+	resource_size = pj_strlen(user) + 1;
 	resource = ast_alloca(resource_size);
-	ast_copy_pj_str(resource, &request_uri->user, resource_size);
+	ast_copy_pj_str(resource, user, resource_size);
 
 	/*
 	 * We may want to match without any user options getting
@@ -2070,6 +2070,7 @@ static void add_rlmi_resource(pj_pool_t *pool, pj_xml_node *rlmi, const pjsip_ge
 	pj_xml_attr *cid_attr;
 	char id[6];
 	char uri[PJSIP_MAX_URL_SIZE];
+	char name_sanitized[PJSIP_MAX_URL_SIZE];
 
 	/* This creates a string representing the Content-ID without the enclosing < > */
 	const pj_str_t cid_stripped = {
@@ -2084,7 +2085,8 @@ static void add_rlmi_resource(pj_pool_t *pool, pj_xml_node *rlmi, const pjsip_ge
 	pjsip_uri_print(PJSIP_URI_IN_CONTACT_HDR, resource_uri, uri, sizeof(uri));
 	ast_sip_presence_xml_create_attr(pool, resource, "uri", uri);
 
-	pj_strdup2(pool, &name->content, resource_name);
+	ast_sip_sanitize_xml(resource_name, name_sanitized, sizeof(name_sanitized));
+	pj_strdup2(pool, &name->content, name_sanitized);
 
 	ast_generate_random_string(id, sizeof(id));
 
@@ -3013,11 +3015,11 @@ static pj_bool_t pubsub_on_rx_subscribe_request(pjsip_rx_data *rdata)
 	struct ast_sip_pubsub_body_generator *generator;
 	char *resource;
 	pjsip_uri *request_uri;
-	pjsip_sip_uri *request_uri_sip;
 	size_t resource_size;
 	int resp;
 	struct resource_tree tree;
 	pj_status_t dlg_status;
+	const pj_str_t *user;
 
 	endpoint = ast_pjsip_rdata_get_endpoint(rdata);
 	ast_assert(endpoint != NULL);
@@ -3030,7 +3032,7 @@ static pj_bool_t pubsub_on_rx_subscribe_request(pjsip_rx_data *rdata)
 
 	request_uri = rdata->msg_info.msg->line.req.uri;
 
-	if (!PJSIP_URI_SCHEME_IS_SIP(request_uri) && !PJSIP_URI_SCHEME_IS_SIPS(request_uri)) {
+	if (!ast_sip_is_uri_sip_sips(request_uri)) {
 		char uri_str[PJSIP_MAX_URL_SIZE];
 
 		pjsip_uri_print(PJSIP_URI_IN_REQ_URI, request_uri, uri_str, sizeof(uri_str));
@@ -3039,10 +3041,10 @@ static pj_bool_t pubsub_on_rx_subscribe_request(pjsip_rx_data *rdata)
 		return PJ_TRUE;
 	}
 
-	request_uri_sip = pjsip_uri_get_uri(request_uri);
-	resource_size = pj_strlen(&request_uri_sip->user) + 1;
+	user = ast_sip_pjsip_uri_get_username(request_uri);
+	resource_size = pj_strlen(user) + 1;
 	resource = ast_alloca(resource_size);
-	ast_copy_pj_str(resource, &request_uri_sip->user, resource_size);
+	ast_copy_pj_str(resource, user, resource_size);
 
 	/*
 	 * We may want to match without any user options getting
@@ -3258,12 +3260,12 @@ static struct ast_sip_publication *publish_request_initial(struct ast_sip_endpoi
 	RAII_VAR(struct ast_sip_publication_resource *, resource, NULL, ao2_cleanup);
 	struct ast_variable *event_configuration_name = NULL;
 	pjsip_uri *request_uri;
-	pjsip_sip_uri *request_uri_sip;
 	int resp;
+	const pj_str_t *user;
 
 	request_uri = rdata->msg_info.msg->line.req.uri;
 
-	if (!PJSIP_URI_SCHEME_IS_SIP(request_uri) && !PJSIP_URI_SCHEME_IS_SIPS(request_uri)) {
+	if (!ast_sip_is_uri_sip_sips(request_uri)) {
 		char uri_str[PJSIP_MAX_URL_SIZE];
 
 		pjsip_uri_print(PJSIP_URI_IN_REQ_URI, request_uri, uri_str, sizeof(uri_str));
@@ -3272,10 +3274,10 @@ static struct ast_sip_publication *publish_request_initial(struct ast_sip_endpoi
 		return NULL;
 	}
 
-	request_uri_sip = pjsip_uri_get_uri(request_uri);
-	resource_size = pj_strlen(&request_uri_sip->user) + 1;
+	user = ast_sip_pjsip_uri_get_username(request_uri);
+	resource_size = pj_strlen(user) + 1;
 	resource_name = ast_alloca(resource_size);
-	ast_copy_pj_str(resource_name, &request_uri_sip->user, resource_size);
+	ast_copy_pj_str(resource_name, user, resource_size);
 
 	/*
 	 * We may want to match without any user options getting
@@ -3992,6 +3994,15 @@ static int cmp_subscription_childrens(struct ast_sip_subscription *s1, struct as
 	return 0;
 }
 
+static int destroy_subscriptions_task(void *obj)
+{
+	struct ast_sip_subscription *sub = (struct ast_sip_subscription *) obj;
+
+	destroy_subscriptions(sub);
+
+	return 0;
+}
+
 /*!
  * \brief Called whenever an in-dialog SUBSCRIBE is received
  *
@@ -4059,8 +4070,25 @@ static void pubsub_on_rx_refresh(pjsip_evsub *evsub, pjsip_rx_data *rdata,
 						new_root->version = old_root->version;
 						sub_tree->root = new_root;
 						sub_tree->generate_initial_notify = 1;
+
+						/* If there is scheduled notification need to delete it to avoid use old subscriptions */
+						if (sub_tree->notify_sched_id > -1) {
+							AST_SCHED_DEL_UNREF(sched, sub_tree->notify_sched_id, ao2_ref(sub_tree, -1));
+							sub_tree->send_scheduled_notify = 0;
+						}
+
+						/* Terminate old subscriptions to stop sending NOTIFY messages on exten/device state changes */
+						set_state_terminated(old_root);
+
+						/* Shutdown old subscriptions to remove exten/device state change callbacks
+						 that can queue tasks for old subscriptions */
 						shutdown_subscriptions(old_root);
-						destroy_subscriptions(old_root);
+
+						/* Postpone destruction until all already queued tasks that may be using old subscriptions have completed */
+						if (ast_sip_push_task(sub_tree->serializer, destroy_subscriptions_task, old_root)) {
+							ast_log(LOG_ERROR, "Failed to push task to destroy old subscriptions for RLS '%s->%s'.\n",
+								ast_sorcery_object_get_id(endpoint), old_root->resource);
+						}
 					} else {
 						destroy_subscriptions(new_root);
 					}

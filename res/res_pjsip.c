@@ -53,6 +53,7 @@
 	<depend>res_sorcery_memory</depend>
 	<depend>res_sorcery_astdb</depend>
 	<use type="module">res_statsd</use>
+	<use type="module">res_geolocation</use>
 	<support_level>core</support_level>
  ***/
 
@@ -904,6 +905,7 @@ pjsip_dialog *ast_sip_create_dialog_uac(const struct ast_sip_endpoint *endpoint,
 	/* Add the user=phone parameter if applicable */
 	ast_sip_add_usereqphone(endpoint, dlg->pool, dlg->target);
 	ast_sip_add_usereqphone(endpoint, dlg->pool, dlg->remote.info->uri);
+	ast_sip_add_usereqphone(endpoint, dlg->pool, dlg->local.info->uri);
 
 	if (!ast_strlen_zero(outbound_proxy)) {
 		pjsip_route_hdr route_set, *route;
@@ -1870,6 +1872,22 @@ int ast_sip_add_header(pjsip_tx_data *tdata, const char *name, const char *value
 	return 0;
 }
 
+pjsip_generic_string_hdr *ast_sip_add_header2(pjsip_tx_data *tdata,
+	const char *name, const char *value)
+{
+	pj_str_t hdr_name;
+	pj_str_t hdr_value;
+	pjsip_generic_string_hdr *hdr;
+
+	pj_cstr(&hdr_name, name);
+	pj_cstr(&hdr_value, value);
+
+	hdr = pjsip_generic_string_hdr_create(tdata->pool, &hdr_name, &hdr_value);
+
+	pjsip_msg_add_hdr(tdata->msg, (pjsip_hdr *) hdr);
+	return hdr;
+}
+
 static pjsip_msg_body *ast_body_to_pjsip_body(pj_pool_t *pool, const struct ast_sip_body *body)
 {
 	pj_str_t type;
@@ -2455,6 +2473,69 @@ struct ast_threadpool *ast_sip_threadpool(void)
 	return sip_threadpool;
 }
 
+int ast_sip_is_uri_sip_sips(pjsip_uri *uri)
+{
+	return (PJSIP_URI_SCHEME_IS_SIP(uri) || PJSIP_URI_SCHEME_IS_SIPS(uri));
+}
+
+int ast_sip_is_allowed_uri(pjsip_uri *uri)
+{
+	return (ast_sip_is_uri_sip_sips(uri) || PJSIP_URI_SCHEME_IS_TEL(uri));
+}
+
+const pj_str_t *ast_sip_pjsip_uri_get_username(pjsip_uri *uri)
+{
+	if (ast_sip_is_uri_sip_sips(uri)) {
+		pjsip_sip_uri *sip_uri = pjsip_uri_get_uri(uri);
+		if (!sip_uri) {
+			return &AST_PJ_STR_EMPTY;
+		}
+		return &sip_uri->user;
+	} else if (PJSIP_URI_SCHEME_IS_TEL(uri)) {
+		pjsip_tel_uri *tel_uri = pjsip_uri_get_uri(uri);
+		if (!tel_uri) {
+			return &AST_PJ_STR_EMPTY;
+		}
+		return &tel_uri->number;
+	}
+
+	return &AST_PJ_STR_EMPTY;
+}
+
+const pj_str_t *ast_sip_pjsip_uri_get_hostname(pjsip_uri *uri)
+{
+	if (ast_sip_is_uri_sip_sips(uri)) {
+		pjsip_sip_uri *sip_uri = pjsip_uri_get_uri(uri);
+		if (!sip_uri) {
+			return &AST_PJ_STR_EMPTY;
+		}
+		return &sip_uri->host;
+	} else if (PJSIP_URI_SCHEME_IS_TEL(uri)) {
+		return &AST_PJ_STR_EMPTY;
+	}
+
+	return &AST_PJ_STR_EMPTY;
+}
+
+struct pjsip_param *ast_sip_pjsip_uri_get_other_param(pjsip_uri *uri, const pj_str_t *param_str)
+{
+	if (ast_sip_is_uri_sip_sips(uri)) {
+		pjsip_sip_uri *sip_uri = pjsip_uri_get_uri(uri);
+		if (!sip_uri) {
+			return NULL;
+		}
+		return pjsip_param_find(&sip_uri->other_param, param_str);
+	} else if (PJSIP_URI_SCHEME_IS_TEL(uri)) {
+		pjsip_tel_uri *tel_uri = pjsip_uri_get_uri(uri);
+		if (!tel_uri) {
+			return NULL;
+		}
+		return pjsip_param_find(&tel_uri->other_param, param_str);
+	}
+
+	return NULL;
+}
+
 #ifdef TEST_FRAMEWORK
 AST_TEST_DEFINE(xml_sanitization_end_null)
 {
@@ -2749,6 +2830,14 @@ static int load_module(void)
 		goto error;
 	}
 
+	/*
+	 * It is OK to prune the contacts now that
+	 * ast_res_pjsip_init_options_handling() has added the contact observer
+	 * of res/res_pjsip/pjsip_options.c to sorcery (to ensure that any
+	 * pruned contacts are removed from this module's data structure).
+	 */
+	ast_sip_location_prune_boot_contacts();
+
 	if (ast_res_pjsip_init_message_filter()) {
 		ast_log(LOG_ERROR, "Failed to initialize message IP updating. Aborting load\n");
 		goto error;
@@ -2810,5 +2899,5 @@ AST_MODULE_INFO(ASTERISK_GPL_KEY, AST_MODFLAG_GLOBAL_SYMBOLS | AST_MODFLAG_LOAD_
 	.reload = reload_module,
 	.load_pri = AST_MODPRI_CHANNEL_DEPEND - 5,
 	.requires = "dnsmgr,res_pjproject,res_sorcery_config,res_sorcery_memory,res_sorcery_astdb",
-	.optional_modules = "res_statsd",
+	.optional_modules = "res_geolocation,res_statsd",
 );

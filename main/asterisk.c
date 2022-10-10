@@ -297,7 +297,7 @@ int daemon(int, int);  /* defined in libresolv of all places */
 #define NUM_MSGS 64
 
 /*! Displayed copyright tag */
-#define COPYRIGHT_TAG "Copyright (C) 1999 - 2021, Sangoma Technologies Corporation and others."
+#define COPYRIGHT_TAG "Copyright (C) 1999 - 2022, Sangoma Technologies Corporation and others."
 
 /*! \brief Welcome message when starting a CLI interface */
 #define WELCOME_MESSAGE \
@@ -3007,6 +3007,23 @@ static char *cli_complete(EditLine *editline, int ch)
 			/* Only read 1024 bytes at a time */
 			res = read(ast_consock, mbuf + mlen, 1024);
 			if (res > 0) {
+				if (!strncmp(mbuf, "Usage:", 6)) {
+					/*
+					 * Abort on malformed tab completes
+					 * If help (tab complete) follows certain
+					 * special characters, the main Asterisk process
+					 * provides usage for the internal tab complete
+					 * helper command that the remote console processes
+					 * use.
+					 * If this happens, the AST_CLI_COMPLETE_EOF sentinel
+					 * value never gets sent. As a result, we'll just block
+					 * forever if we don't handle this case.
+					 * If we get command usage on a tab complete, then
+					 * we know this scenario just happened and we should
+					 * just silently ignore and do nothing.
+					 */
+					break;
+				}
 				mlen += res;
 				mbuf[mlen] = '\0';
 			}
@@ -3351,7 +3368,7 @@ static int show_cli_help(void)
 	printf("   -L <load>       Limit the maximum load average before rejecting new calls\n");
 	printf("   -M <value>      Limit the maximum number of calls to the specified value\n");
 	printf("   -m              Mute debugging and console output on the console\n");
-	printf("   -n              Disable console colorization\n");
+	printf("   -n              Disable console colorization. Can be used only at startup.\n");
 	printf("   -p              Run as pseudo-realtime thread\n");
 	printf("   -q              Quiet mode (suppress output)\n");
 	printf("   -r              Connect to Asterisk on this machine\n");
@@ -3360,7 +3377,7 @@ static int show_cli_help(void)
 	printf("   -t              Record soundfiles in /var/tmp and move them where they\n");
 	printf("                   belong after they are done\n");
 	printf("   -T              Display the time in [Mmm dd hh:mm:ss] format for each line\n");
-	printf("                   of output to the CLI\n");
+	printf("                   of output to the CLI. Cannot be used with remote console mode.\n\n");
 	printf("   -v              Increase verbosity (multiple v's = more verbose)\n");
 	printf("   -x <cmd>        Execute command <cmd> (implies -r)\n");
 	printf("   -X              Enable use of #exec in asterisk.conf\n");
@@ -3554,7 +3571,7 @@ int main(int argc, char *argv[])
 	}
 	ast_mainpid = getpid();
 
-	/* Process command-line options that effect asterisk.conf load. */
+	/* Process command-line options that affect asterisk.conf load. */
 	while ((c = getopt(argc, argv, getopt_settings)) != -1) {
 		switch (c) {
 		case 'X':
@@ -3713,6 +3730,57 @@ int main(int argc, char *argv[])
 		case '?':
 			/* already processed. */
 			break;
+		}
+	}
+
+	if (ast_opt_remote) {
+		int didwarn = 0;
+		optind = 1;
+
+		/* Not all options can be used with remote console. Warn if they're used. */
+		while ((c = getopt(argc, argv, getopt_settings)) != -1) {
+			switch (c) {
+			/* okay to run with remote console */
+			case 'B': /* force black background */
+			case 'C': /* set config path */
+			case 'd': /* debug */
+			case 'h': /* help */
+			case 'I': /* obsolete timing option: warning already thrown if used */
+			case 'L': /* max load */
+			case 'M': /* max calls */
+			case 'm': /* mute */
+			/*! \note The q option is never used anywhere, only defined */
+			case 'q': /* quiet */
+			case 'R': /* reconnect */
+			case 'r': /* remote */
+			/*! \note Can ONLY be used with remote console */
+			case 's': /* set socket path */
+			case 'V': /* version */
+			case 'v': /* verbose */
+			case 'W': /* white background */
+			case 'x': /* remote execute */
+			case '?': /* ? */
+				break;
+			/* can only be run when Asterisk is starting */
+			case 'X': /* enables #exec for asterisk.conf only. */
+			case 'c': /* foreground console */
+			case 'e': /* minimum memory free */
+			case 'F': /* always fork */
+			case 'f': /* no fork */
+			case 'G': /* run group */
+			case 'g': /* dump core */
+			case 'i': /* init keys */
+			case 'n': /* no color */
+			case 'p': /* high priority */
+			case 'T': /* timestamp */
+			case 't': /* cache record files */
+			case 'U': /* run user */
+				fprintf(stderr, "'%c' option is not compatible with remote console mode and has no effect.\n", c);
+				didwarn = 1;
+			}
+		}
+		if (didwarn) {
+			fprintf(stderr, "\n"); /* if any warnings print out, make them stand out */
 		}
 	}
 
@@ -4014,7 +4082,7 @@ static void asterisk_daemon(int isroot, const char *runuser, const char *rungrou
 
 	load_astmm_phase_1();
 
-	/* Check whether high prio was succesfully set by us or some
+	/* Check whether high prio was successfully set by us or some
 	 * other incantation. */
 	if (has_priority()) {
 		ast_set_flag(&ast_options, AST_OPT_FLAG_HIGH_PRIORITY);
@@ -4201,6 +4269,7 @@ static void asterisk_daemon(int isroot, const char *runuser, const char *rungrou
 
 	/* loads the cli_permissions.conf file needed to implement cli restrictions. */
 	ast_cli_perms_init(0);
+	ast_cli_channels_init(); /* Not always safe to access CLI commands until startup is complete. */
 
 	ast_stun_init();
 
