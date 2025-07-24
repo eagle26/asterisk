@@ -140,6 +140,14 @@ const int ast_audiosocket_connect(const char *server, struct ast_channel *chan)
 			continue;
 		}
 
+		/*
+		 * Disable Nagle's algorithm by setting the TCP_NODELAY socket option.
+		 * This reduces latency by preventing delays caused by packet buffering.
+		 */
+		if (setsockopt(s, IPPROTO_TCP, TCP_NODELAY, &(int){1}, sizeof(int)) < 0) {
+			ast_log(LOG_ERROR, "Failed to set TCP_NODELAY on AudioSocket: %s\n", strerror(errno));
+		}
+
 		if (ast_connect(s, &addrs[i]) && errno == EINPROGRESS) {
 
 			if (handle_audiosocket_connection(server, addrs[i], s)) {
@@ -307,6 +315,18 @@ struct ast_frame *ast_audiosocket_receive_frame_with_hangup(const int svc,
 	while (i < *length) {
 		n = read(svc, data + i, *length - i);
 		if (n == -1) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				int poll_result = ast_wait_for_input(svc, 5);
+
+				if (poll_result == 1) {
+					continue;
+				} else if (poll_result == 0) {
+					ast_log(LOG_WARNING, "Poll timed out while waiting for data\n");
+				} else {
+					ast_log(LOG_WARNING, "Poll error: %s\n", strerror(errno));
+				}
+			}
+
 			ast_log(LOG_ERROR, "Failed to read payload from AudioSocket: %s\n", strerror(errno));
 			ret = -1;
 			break;

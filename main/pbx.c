@@ -2942,11 +2942,17 @@ static int pbx_extension_helper(struct ast_channel *c, struct ast_context *con,
 				ast_log(LOG_WARNING, "No application '%s' for extension (%s, %s, %d)\n", e->app, context, exten, priority);
 				return -1;
 			}
+			ast_channel_lock(c);
+			if (ast_channel_softhangup_internal_flag(c) & AST_SOFTHANGUP_ASYNCGOTO) {
+				ast_channel_unlock(c);
+				return 0;
+			}
 			if (ast_channel_context(c) != context)
 				ast_channel_context_set(c, context);
 			if (ast_channel_exten(c) != exten)
 				ast_channel_exten_set(c, exten);
 			ast_channel_priority_set(c, priority);
+			ast_channel_unlock(c);
 			if (substitute) {
 				pbx_substitute_variables_helper(c, substitute, passdata, sizeof(passdata)-1);
 			}
@@ -6964,6 +6970,10 @@ int ast_explicit_goto(struct ast_channel *chan, const char *context, const char 
 
 	ast_channel_lock(chan);
 
+	if (ast_channel_softhangup_internal_flag(chan) & AST_SOFTHANGUP_ASYNCGOTO) {
+		ast_channel_unlock(chan);
+		return -1;
+	}
 	if (!ast_strlen_zero(context))
 		ast_channel_context_set(chan, context);
 	if (!ast_strlen_zero(exten))

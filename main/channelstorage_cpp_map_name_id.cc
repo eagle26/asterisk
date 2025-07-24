@@ -151,12 +151,13 @@ static struct ast_channel *callback(struct ast_channelstorage_instance *driver,
 		chan = it->second;
 		if (cb_fn(chan, arg, data, ao2_flags) == (CMP_MATCH | CMP_STOP)) {
 			ao2_bump(chan);
-			break;
+			unlock(driver);
+			return chan;
 		}
 	}
 	unlock(driver);
 
-	return chan;
+	return NULL;
 }
 
 enum cpp_map_iterator_type {
@@ -387,7 +388,7 @@ static void close_instance(struct ast_channelstorage_instance *driver)
 static struct ast_channelstorage_instance channelstorage_instance = {
 	.handle = NULL,
 	.lock_handle = NULL,
-	.close = close_instance,
+	.close_instance = close_instance,
 	.insert = insert_channel,
 	.remove = delete_channel,
 	.rdlock = rdlock,
@@ -445,7 +446,7 @@ static struct ast_channelstorage_instance* get_instance(const char *name)
 
 static struct ast_channelstorage_driver driver_type = {
 	.driver_name = "cpp_map_name_id",
-	.open = get_instance,
+	.open_instance = get_instance,
 };
 
 static void __attribute__((constructor)) __startup(void)
